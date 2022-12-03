@@ -1,9 +1,16 @@
 #include <FastLED.h> /* Arduino library to drive LED panel*/
+#include <Adafruit_NeoPixel.h>
+#include <Adafruit_NeoMatrix.h>
+#include <Adafruit_GFX.h>
+#include <gfxfont.h>
+#include <Fonts/FreeSans9pt7b.h>
+#include <avr/pgmspace.h>
 
-#define HATLED 16 /* Arduino pin for the hat lightbulb PWM dimmer*/
+#define HATLED 5 /* Arduino pin for the hat lightbulb PWM dimmer*/
 #define NUM_LEDS 256 /*Panel Array size*/
-#define DATA_PIN 17 /*Arduino pin for LED Array*/
-#define ledBrightness 10 /*Glloball brightness, do not use over 100*/
+#define DATA_PIN 6 /*Arduino pin for LED Array*/
+#define ledBrightness 30 /*Glloball brightness, do not use over 100*/
+#define COLOR_ORDER GRB /*LED Colour Order*/
 
   /*/Setting up 8-segment LED Matrix/*/
   /*/////////////////////////////////*/
@@ -23,19 +30,30 @@ CRGBSet seg8(leds(224,255));
 
 struct CRGB * ledarray[] ={seg1, seg2, seg3, seg4, seg5, seg6, seg7, seg8}; 
 
+#define FRAMES_PER_SECOND  120  /*For LED panel animations*/
+
+Adafruit_NeoMatrix matrix = Adafruit_NeoMatrix(32, 8, DATA_PIN, /*For LED panel animations*/
+  NEO_MATRIX_TOP    + NEO_MATRIX_LEFT +
+  NEO_MATRIX_COLUMNS + NEO_MATRIX_ZIGZAG,
+  NEO_GRB            + NEO_KHZ800);
+  
+const uint16_t colors[] = {
+  matrix.Color(255, 0, 0), matrix.Color(0, 255, 0), matrix.Color(255, 255, 0),matrix.Color(0, 0, 255), matrix.Color(255, 0, 255), matrix.Color(0, 255, 255), matrix.Color(255, 255, 255)};
 
   /*/Main code variables/*/
   /*/////////////////////*/
 
-int BUTTON = 5; /* Arduino pin for the push button fuelguage filler*/
+int BUTTON = 3; /* Arduino pin for the push button fuelguage filler*/
 int buttonTime = 750; /* Time that will be considered as the long-press time for pushbutton*/
 int previousState = LOW; /* Setting the initial state of push button LOW*/
 int presentState;  /* Variable that will store the present state of the button*/
-unsigned long press_Time = 0; /* Time at which the button was pressed */
-unsigned long release_Time = 0; /* Time at which the button was released */
+unsigned long pressTime = 0; /* Time at which the button was pressed */
+unsigned long releaseTime = 0; /* Time at which the button was released */
+unsigned long lastPressTime = 0; /* Time at which the button was pressed last time */
+int doubleClick = 350; /*Tiem constant for a double-click */
 int fuelLevel = 5; /* Level in fuel tank [IMPORTANT] */
 int fillRate = 700;  /* How fast the tank fills up per segment */
-int drainRate = 2000;  /* How fast the tank drains (controlled by Potentiometer) */
+int drainRate = 1500;  /* How fast the tank drains (controlled by Potentiometer) */
 int potValue; /* Potentiometer variable for drainRate potentiometer*/
 int hatBright = 0; /* store PWM brightness for HAT*/
 int long flicker; /*random number container*/
@@ -44,63 +62,120 @@ unsigned long previousMillis = 0;  /*will store last time HATLED was updated*/
 unsigned long previousLowFuelMillis = 0;  /*will store last time Low Fuel LED was updated*/
 int lowFuelRate = 500; /*Low Fuel flash rate*/
 int fuelWarning = 1; /*Stores LowFuel indicator On or Off?*/
- 
+int deviceMode = 0; /*Stores operating mode*/ 
+int numModes = 5; /*Stores number of different modes*/ 
+int demoMode = 0; /*DEMO mode container*/ 
 
 void setup() {
   
-  pinMode(BUTTON, INPUT);
+  pinMode(BUTTON, INPUT_PULLUP);
   pinMode(HATLED, OUTPUT);
- // Serial.begin(9600);
+
+  attachInterrupt(digitalPinToInterrupt(3),cancelDemo,RISING);  /*Interrupt to exit Demo Mode on any button-press*/
   
-  FastLED.addLeds<NEOPIXEL, DATA_PIN>(leds, NUM_LEDS);
+  Serial.begin(9600);
+  FastLED.addLeds<NEOPIXEL, DATA_PIN>(rawleds, NUM_LEDS);
   FastLED.setBrightness(ledBrightness);
   FastLED.clear(true);
-  
+
+  matrix.begin();
+  matrix.setTextWrap(false);
+  matrix.setTextColor(colors[0]);
+  matrix.setBrightness(30);
+
 }
+
+  /*/Setting up MuthaTruckin DANCE MODE/*/
+  /*////////////////////////////////////*/
+  
+// List of patterns to cycle through.  Each is defined as a separate function below.
+typedef void (*SimplePatternList[])();
+SimplePatternList gPatterns = { textScroll, rainbow, rainbowWithGlitter, confetti, sinelon, juggle, bpm };
+
+uint8_t gCurrentPatternNumber = 0; // Index number of which pattern is current
+uint8_t gHue = 0; // rotating "base color" used by many of the patterns
+
+int x    = matrix.width();
+int pass = 0;
 
 void loop() {
 
-  /*/Controlling drainRate with a Potentiometer/*/
-  /*////////////////////////////////////////////*/
-
-  potValue = (1023- analogRead(A0));                        /*Potentiometer wired to pin A0 to enable analogRead*/ 
-  drainRate = map(potValue, 0, 1023, 200, 10000);           /*Min/Max value for how fast beer empties*/ 
-  Serial.println (fuelLevel);                               /*Debugging*/ 
-  Serial.println (drainRate);                               /*Debugging*/ 
-
-  /*/Filling and Emptying the Tank based on push-button/*/
-  /*////////////////////////////////////////////////*/
+  /* DEBUGGING SERIAL OUTPUT
   
-  presentState = digitalRead(BUTTON);                      /* Getting the present state of the push button */
+  Serial.println((String)"Fuel: "+fuelLevel);                               
+  Serial.println((String)"DrainRate: "+drainRate);                               
+  Serial.println((String)"Button: "+presentState);                        
+  Serial.println((String)"Mode: "+deviceMode);
+  Serial.println((String)"DemoMode: "+demoMode);
+  
+  */
+
+  /*/Controlling drainRate with a Potentiometer/*/
+  /*/////////////////////////////////////////////*/
+  //DISABLED - ENABLE IF USING POTENTIOMETER
+  //potValue = (1023- analogRead(A0));                        /*Potentiometer wired to pin A0 to enable analogRead*/ 
+  //drainRate = map(potValue, 0, 1023, 200, 10000);           /*Min/Max value for how fast beer empties*/ 
+
+  /*/Controlling drainRate with mode button//////////*/
+  /*/////////////////////////////////////////////////*/
+  
+  drainRate = map(deviceMode, 0, numModes, 350, 10000);           /*Min/Max value for how fast beer empties*/ 
+
+  /*Filling and Emptying the Tank based on push-button/*/       /* Actions for short press, long-press and double-press */
+  /*///////////////////////////////////////////////////*/
+  
+  presentState = (1-digitalRead(BUTTON));                      /* Getting the present state of the push button */
 
   if (previousState == LOW && presentState == HIGH) {      /* If button is pressed, timestamp the initial press-time and flag button as closed*/
-    press_Time = millis();
+    pressTime = millis();
     previousState = HIGH;
   }
   
   else if (previousState == HIGH && presentState == HIGH && fuelLevel < 9) {    /* If button is closed for >buttonTime, start filling fuelLevel at fillRate up to max 9*/
-    if ((millis() - press_Time) > buttonTime) {
+    if ((millis() - pressTime) > buttonTime) {
       fuelLevel = fuelLevel += 1;
       delay(fillRate);
     }
   }
 
-  else if (previousState == HIGH && presentState == LOW) {  /* When button is released, record the release-time and flag button to open*/
-    release_Time = millis();
-    previousState = LOW;
+  else if (previousState == HIGH && presentState == LOW) {  /* When button is released, record the release-time and flag button to open.*/
+
+           if ((pressTime - lastPressTime) < doubleClick) {      /* If a double click, go to DemoMode*/
+                demoMode = 1;
+                delay(20);
+             }
+               
+           else if ((millis() - pressTime) < buttonTime) {      /* If a short press, cycle the MODE to the next mode up to max N modes.*/
+             if (deviceMode < numModes) {
+                deviceMode = deviceMode += 1;
+                delay(20);
+             }              
+              else deviceMode = 0;
+                delay(20);
+           }
+            releaseTime = millis();
+            previousState = LOW;
+            lastPressTime = pressTime;                   /* Comparator to test for double-press */
   }
     
   else if (previousState == LOW && presentState == LOW && fuelLevel > 0) {       /* Once button is open, empty fuelLevel at drainRate down to 0*/
-    if ((millis() - release_Time) > drainRate) {
+    if ((millis() - releaseTime) > drainRate) {
     fuelLevel = fuelLevel -= 1;
-    release_Time = millis();
+    releaseTime = millis();
     }
   }
+
+  /*///////DEMO MODE LED PANEL outputs////////*/
+  /*//////////////////////////////////////////*/
+
+      while (demoMode == 1) {                                /* LIGHTSHOW MODE - Party time */
+        partyTime();
+      }
 
   /*/Controlling LED panel based on fuelLevel/*/
   /*//////////////////////////////////////////*/
 
-      if (fuelLevel == 0) {      /* Empty Tank!!! Flashing and Hat LED flicker*/
+      if (fuelLevel == 0 && demoMode == 0) {      /* Empty Tank!!! Flashing and Hat LED flicker*/
       hatFlicker();
       lowFuelFlash();  
       }
@@ -229,6 +304,102 @@ void loop() {
     }
 }
 
+  /*/Setting up MuthaTruckin DANCE MODE/*/
+  /*////////////////////////////////////*/
+  
+void partyTime()
+{
+  // Call the current pattern function once, updating the 'leds' array
+  gPatterns[gCurrentPatternNumber]();
+
+  // send the 'leds' array out to the actual LED strip
+  FastLED.show();  
+  // insert a delay to keep the framerate modest
+  FastLED.delay(1000/FRAMES_PER_SECOND); 
+
+  // do some periodic updates
+  EVERY_N_MILLISECONDS( 20 ) { gHue++; } // slowly cycle the "base color" through the rainbow
+  EVERY_N_SECONDS( 3 ) { FastLED.clear();  nextPattern(); } // change patterns periodically
+}
+
+#define ARRAY_SIZE(A) (sizeof(A) / sizeof((A)[0]))
+
+void nextPattern()
+{
+  // add one to the current pattern number, and wrap around at the end
+  gCurrentPatternNumber = (gCurrentPatternNumber + 1) % ARRAY_SIZE( gPatterns);
+}
+
+void rainbow() 
+{
+  // FastLED's built-in rainbow generator
+  fill_rainbow( leds, NUM_LEDS, gHue, 7);
+}
+
+void rainbowWithGlitter() 
+{
+  // built-in FastLED rainbow, plus some random sparkly glitter
+  rainbow();
+  addGlitter(80);
+}
+
+void addGlitter( fract8 chanceOfGlitter) 
+{
+  if( random8() < chanceOfGlitter) {
+    leds[ random16(NUM_LEDS) ] += CRGB::White;
+  }
+}
+
+void confetti() 
+{
+  // random colored speckles that blink in and fade smoothly
+  fadeToBlackBy( leds, NUM_LEDS, 10);
+  int pos = random16(NUM_LEDS);
+  leds[pos] += CHSV( gHue + random8(64), 200, 255);
+}
+
+void sinelon()
+{
+  // a colored dot sweeping back and forth, with fading trails
+  fadeToBlackBy( leds, NUM_LEDS, 20);
+  int pos = beatsin16( 13, 0, NUM_LEDS-1 );
+  leds[pos] += CHSV( gHue, 255, 192);
+}
+
+void bpm()
+{
+  // colored stripes pulsing at a defined Beats-Per-Minute (BPM)
+  uint8_t BeatsPerMinute = 62;
+  CRGBPalette16 palette = PartyColors_p;
+  uint8_t beat = beatsin8( BeatsPerMinute, 64, 255);
+  for( int i = 0; i < NUM_LEDS; i++) { //9948
+    leds[i] = ColorFromPalette(palette, gHue+(i*2), beat-gHue+(i*10));
+  }
+}
+
+void juggle() {
+  // eight colored dots, weaving in and out of sync with each other
+  fadeToBlackBy( leds, NUM_LEDS, 20);
+  uint8_t dothue = 0;
+  for( int i = 0; i < 8; i++) {
+    leds[beatsin16( i+7, 0, NUM_LEDS-1 )] |= CHSV(dothue, 200, 255);
+    dothue += 32;
+  }
+}
+
+void textScroll() {
+
+  matrix.clear();
+  matrix.setCursor(2, 1);
+  matrix.print(F("DYSON"));
+  matrix.show();
+
+}
+
+  /*/Setting up code for LED Flicker etc/*/
+  /*////////////////////////////////////*/
+
+
 void hatFlicker() {           /*First go at a flicker algo - only called currently for 0 fuel*/
 
   flicker = random(5,1000);  /*random flicker intervals*/
@@ -244,19 +415,31 @@ void hatFlicker() {           /*First go at a flicker algo - only called current
   }
 }
 
-void lowFuelFlash() {           /*Same concept to flash the red segment without delay()*/
+void lowFuelFlash() {           /*NEED BEER - Same concept to flash the red segment without delay()*/
 
-  unsigned long currentLowFuelMillis = millis();
+    unsigned long currentLowFuelMillis = millis();
     if (currentLowFuelMillis - previousLowFuelMillis >= lowFuelRate) {
       previousLowFuelMillis = currentLowFuelMillis;
     if (fuelWarning == 0) {
-      fill_solid(ledarray[0], 32, CRGB::Red);
+      matrix.clear();
+      matrix.fill(CRGB::Red, 0, 32);
+      matrix.fill(CRGB::Red, 224, 255);
+      matrix.setCursor(5, 1);
+      matrix.print(F("LOW"));
+      matrix.show();
       fuelWarning = 1;
-      FastLED.show();
     } else {
-      fill_solid(ledarray[0], 32, CRGB::Black);
+      matrix.clear();
+      matrix.setCursor(5, 1);
+      matrix.print(F("FUEL !"));
+      matrix.show();
       fuelWarning = 0;
       FastLED.show();
     }
   }
+}
+
+void cancelDemo() {
+  demoMode = 0;
+  FastLED.clear();
 }
