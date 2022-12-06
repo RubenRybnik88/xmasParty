@@ -6,7 +6,7 @@
 #include <Fonts/FreeSans9pt7b.h>
 #include <avr/pgmspace.h>
 
-#define HATLED 5 /* Arduino pin for the hat lightbulb PWM dimmer*/
+#define HATLED 4 /* Arduino pin for the hat lightbulb PWM dimmer*/
 #define NUM_LEDS 256 /*Panel Array size*/
 #define DATA_PIN 6 /*Arduino pin for LED Array*/
 #define ledBrightness 30 /*Glloball brightness, do not use over 100*/
@@ -60,17 +60,22 @@ int long flicker; /*random number container*/
 int ledState = LOW;  /* ledState used to set the HATLED in Flicker*/
 unsigned long previousMillis = 0;  /*will store last time HATLED was updated*/
 unsigned long previousLowFuelMillis = 0;  /*will store last time Low Fuel LED was updated*/
+unsigned long previousFullFuelMillis = 0; /*will store last time Full Fuel LED was updated*/
 int lowFuelRate = 500; /*Low Fuel flash rate*/
+int fullFuelRate = 250; /*Full Fuel flash rate*/
 int fuelWarning = 1; /*Stores LowFuel indicator On or Off?*/
 int deviceMode = 0; /*Stores operating mode*/ 
 int numModes = 5; /*Stores number of different modes*/ 
 int demoMode = 0; /*DEMO mode container*/ 
+int fuelFull = 0;
+
+
 
 void setup() {
   
   pinMode(BUTTON, INPUT_PULLUP);
   pinMode(HATLED, OUTPUT);
-
+  pinMode(18, INPUT);
   attachInterrupt(digitalPinToInterrupt(3),cancelDemo,RISING);  /*Interrupt to exit Demo Mode on any button-press*/
   
   Serial.begin(9600);
@@ -100,27 +105,18 @@ int pass = 0;
 
 void loop() {
 
-  /* DEBUGGING SERIAL OUTPUT
+  /*/DEBUGGING SERIAL OUTPUT
   
   Serial.println((String)"Fuel: "+fuelLevel);                               
   Serial.println((String)"DrainRate: "+drainRate);                               
   Serial.println((String)"Button: "+presentState);                        
+  Serial.println((String)"potValue: "+potValue);
   Serial.println((String)"Mode: "+deviceMode);
   Serial.println((String)"DemoMode: "+demoMode);
-  
   */
-
-  /*/Controlling drainRate with a Potentiometer/*/
-  /*/////////////////////////////////////////////*/
-  //DISABLED - ENABLE IF USING POTENTIOMETER
-  //potValue = (1023- analogRead(A0));                        /*Potentiometer wired to pin A0 to enable analogRead*/ 
-  //drainRate = map(potValue, 0, 1023, 200, 10000);           /*Min/Max value for how fast beer empties*/ 
-
-  /*/Controlling drainRate with mode button//////////*/
-  /*/////////////////////////////////////////////////*/
   
-  drainRate = map(deviceMode, 0, numModes, 350, 10000);           /*Min/Max value for how fast beer empties*/ 
-
+  drainRate = map(deviceMode, 0, numModes, 350, 30000);  /*Min/Max button value for how fast beer empties*/ 
+ 
   /*Filling and Emptying the Tank based on push-button/*/       /* Actions for short press, long-press and double-press */
   /*///////////////////////////////////////////////////*/
   
@@ -134,7 +130,7 @@ void loop() {
   else if (previousState == HIGH && presentState == HIGH && fuelLevel < 9) {    /* If button is closed for >buttonTime, start filling fuelLevel at fillRate up to max 9*/
     if ((millis() - pressTime) > buttonTime) {
       fuelLevel = fuelLevel += 1;
-      delay(fillRate);
+      pressTime = millis();
     }
   }
 
@@ -142,41 +138,41 @@ void loop() {
 
            if ((pressTime - lastPressTime) < doubleClick) {      /* If a double click, go to DemoMode*/
                 demoMode = 1;
-                delay(20);
              }
                
            else if ((millis() - pressTime) < buttonTime) {      /* If a short press, cycle the MODE to the next mode up to max N modes.*/
              if (deviceMode < numModes) {
                 deviceMode = deviceMode += 1;
-                delay(20);
              }              
               else deviceMode = 0;
-                delay(20);
            }
             releaseTime = millis();
             previousState = LOW;
             lastPressTime = pressTime;                   /* Comparator to test for double-press */
   }
-    
+  
   else if (previousState == LOW && presentState == LOW && fuelLevel > 0) {       /* Once button is open, empty fuelLevel at drainRate down to 0*/
     if ((millis() - releaseTime) > drainRate) {
     fuelLevel = fuelLevel -= 1;
     releaseTime = millis();
-    }
   }
-
-  /*///////DEMO MODE LED PANEL outputs////////*/
+  }
+  
+  /*///////DEMO MODE//////////////////////////*/
   /*//////////////////////////////////////////*/
 
       while (demoMode == 1) {                                /* LIGHTSHOW MODE - Party time */
         partyTime();
       }
 
-  /*/Controlling LED panel based on fuelLevel/*/
+  /*/Controlling LED panel and HAT based on fuelLevel/*/
   /*//////////////////////////////////////////*/
 
-      if (fuelLevel == 0 && demoMode == 0) {      /* Empty Tank!!! Flashing and Hat LED flicker*/
-      hatFlicker();
+      if (fuelLevel < 6) hatFlicker();            /* Gradually increasing flicker under half-tank*/
+      else analogWrite(HATLED, map(fuelLevel, 1, 9, 50, 255));
+
+
+      if (fuelLevel == 0 && demoMode == 0) {      /* Empty Tank!!! Flashing and displays text*/
       lowFuelFlash();  
       }
 
@@ -280,35 +276,26 @@ void loop() {
       }          
       
     else if (fuelLevel == 9) {      /* Full Tank!!! Flashing top segment */
-      fill_solid(ledarray[0], 32, CRGB::Red);
-      fill_solid(ledarray[1], 32, CRGB::DarkOrange);
-      fill_solid(ledarray[2], 32, CRGB::Yellow);
-      fill_solid(ledarray[3], 32, CRGB::Yellow);
-      fill_solid(ledarray[4], 32, CRGB::Green);
-      fill_solid(ledarray[5], 32, CRGB::Green);    
-      fill_solid(ledarray[6], 32, CRGB::Green);
-      fill_solid(ledarray[7], 32, CRGB::Green);    
-      FastLED.show(); 
-      delay(500);                                       /*Uses delay(). Probably no issue as this is the end of a chain, so once*/
-      fill_solid(ledarray[7], 32, CRGB::Black);         /*fuel <8 it won't interrupt/delay. HatLED is currently just set to max */
-      FastLED.show();                                   /*Might need a rewrite if we want a fancier flicker algo for full tanks?*/
-      delay(500);
+      fullFuelFlash();
     }
     
-  /*/Controlling HAT BULB brightness with PWM based on fuelLevel > 0/*/
-  /*/////////////////////////////////////////////////////////////////*/
-
-    if (fuelLevel > 0) {      /* Light gets proportionallly brighter from 1-9 fuelLevel*/
-    hatBright = map(fuelLevel, 1, 9, 50, 255);  /*LED brightness. Maps fuelLevel to pwm Min/Max*/
-    analogWrite(HATLED, hatBright);   /*PWM output to trigger transistor circuit*/
-    }
 }
 
   /*/Setting up MuthaTruckin DANCE MODE/*/
   /*////////////////////////////////////*/
   
-void partyTime()
-{
+void partyTime(){
+
+   // Flash on and off the HAT LED
+  EVERY_N_MILLISECONDS( 250 ) { 
+  if (ledState == LOW) {  
+      ledState = random(10, 255);/*Turns light on with random brightness, not tied to fuel state*/
+    } else {
+      ledState = LOW;
+    }
+    analogWrite(HATLED, ledState);
+    }
+
   // Call the current pattern function once, updating the 'leds' array
   gPatterns[gCurrentPatternNumber]();
 
@@ -396,26 +383,32 @@ void textScroll() {
 
 }
 
-  /*/Setting up code for LED Flicker etc/*/
-  /*////////////////////////////////////*/
+  /*/HATLED Flicker/*/
+  /*////////////////*/
 
 
-void hatFlicker() {           /*First go at a flicker algo - only called currently for 0 fuel*/
-
-  flicker = random(5,1000);  /*random flicker intervals*/
-  unsigned long currentMillis = millis();
+void hatFlicker() {           /*Light flickers proportionally to fuel level*/
+  
+  Serial.println(flicker);/*random flicker intervals*/
+    unsigned long currentMillis = millis();
     if (currentMillis - previousMillis >= flicker) {   /*IF loop to use millis() without a delay() in the loop*/
-      previousMillis = currentMillis;
+        previousMillis = currentMillis;
     if (ledState == LOW) {  
-      ledState = random(10, 50 );     /*Turns light on with random brightness, not tied to fuel state*/
+      ledState = random(10, map(fuelLevel, 1, 9, 50, 255));/*Turns light on with random brightness, not tied to fuel state*/
+      flicker = random(10, map(fuelLevel, 1, 9, 100, 3000));
     } else {
       ledState = LOW;
+      flicker = random(10, 100);
     }
     analogWrite(HATLED, ledState);
   }
 }
 
-void lowFuelFlash() {           /*NEED BEER - Same concept to flash the red segment without delay()*/
+
+  /*/LowFuel and FullFuel animations/*/
+  /*/////////////////////////////////*/
+
+void lowFuelFlash() {           /*LOW FUEL !*/
 
     unsigned long currentLowFuelMillis = millis();
     if (currentLowFuelMillis - previousLowFuelMillis >= lowFuelRate) {
@@ -424,20 +417,45 @@ void lowFuelFlash() {           /*NEED BEER - Same concept to flash the red segm
       matrix.clear();
       matrix.fill(CRGB::Red, 0, 32);
       matrix.fill(CRGB::Red, 224, 255);
-      matrix.setCursor(5, 1);
+      matrix.setCursor(7, 1);
       matrix.print(F("LOW"));
       matrix.show();
       fuelWarning = 1;
     } else {
       matrix.clear();
-      matrix.setCursor(5, 1);
+      matrix.setCursor(7, 1);
       matrix.print(F("FUEL !"));
       matrix.show();
       fuelWarning = 0;
-      FastLED.show();
     }
   }
 }
+
+void fullFuelFlash() {           /*Full Tank - Flash top segment()*/
+
+    unsigned long currentFullFuelMillis = millis();
+    if (currentFullFuelMillis - previousFullFuelMillis >= fullFuelRate) {
+      previousFullFuelMillis = currentFullFuelMillis;
+    if (fuelFull == 0) {
+      fill_solid(ledarray[0], 32, CRGB::Red);
+      fill_solid(ledarray[1], 32, CRGB::DarkOrange);
+      fill_solid(ledarray[2], 32, CRGB::Yellow);
+      fill_solid(ledarray[3], 32, CRGB::Yellow);
+      fill_solid(ledarray[4], 32, CRGB::Green);
+      fill_solid(ledarray[5], 32, CRGB::Green);    
+      fill_solid(ledarray[6], 32, CRGB::Green);
+      fill_solid(ledarray[7], 32, CRGB::Green);    
+      FastLED.show(); 
+      fuelFull = 1;
+    } else {
+      fill_solid(ledarray[7], 32, CRGB::Black);
+      FastLED.show();     
+      fuelFull = 0;
+    }
+  }
+}
+  /*/Hard interrupt - resets demo mode/*/
+  /*///////////////////////////////////*/
 
 void cancelDemo() {
   demoMode = 0;
