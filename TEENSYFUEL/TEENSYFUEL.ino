@@ -43,7 +43,7 @@ const uint16_t colors[] = {
   /*/Main code variables/*/
   /*/////////////////////*/
 
-int BUTTON = 3; /* Arduino pin for the push button fuelguage filler*/
+int BUTTON = 2; /* Arduino pin for the push button fuelguage filler*/
 int buttonTime = 750; /* Time that will be considered as the long-press time for pushbutton*/
 int previousState = LOW; /* Setting the initial state of push button LOW*/
 int presentState;  /* Variable that will store the present state of the button*/
@@ -76,7 +76,7 @@ void setup() {
   pinMode(BUTTON, INPUT_PULLUP);
   pinMode(HATLED, OUTPUT);
   pinMode(18, INPUT);
-  attachInterrupt(digitalPinToInterrupt(3),cancelDemo,RISING);  /*Interrupt to exit Demo Mode on any button-press*/
+  attachInterrupt(digitalPinToInterrupt(BUTTON),cancelDemo,RISING);  /*Interrupt to exit Demo Mode on any button-press*/
   
   Serial.begin(9600);
   FastLED.addLeds<NEOPIXEL, DATA_PIN>(rawleds, NUM_LEDS);
@@ -105,7 +105,7 @@ int pass = 0;
 
 void loop() {
 
-  /*/DEBUGGING SERIAL OUTPUT
+  /*/DEBUGGING SERIAL OUTPUT*/
   
   Serial.println((String)"Fuel: "+fuelLevel);                               
   Serial.println((String)"DrainRate: "+drainRate);                               
@@ -113,7 +113,7 @@ void loop() {
   Serial.println((String)"potValue: "+potValue);
   Serial.println((String)"Mode: "+deviceMode);
   Serial.println((String)"DemoMode: "+demoMode);
-  */
+
   
   drainRate = map(deviceMode, 0, numModes, 350, 30000);  /*Min/Max button value for how fast beer empties*/ 
  
